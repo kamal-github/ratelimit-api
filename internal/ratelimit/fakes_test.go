@@ -40,3 +40,28 @@ func (s *fakeBucketStore) Save(_ context.Context, key string, newState BucketSta
 	s.data[key] = newState
 	return true, nil
 }
+
+// fakeCounterStore is a minimal, mutex-protected CounterStore used to unit
+// test SlidingWindowLimiter in isolation.
+type fakeCounterStore struct {
+	mu   sync.Mutex
+	data map[string]int64
+}
+
+func newFakeCounterStore() *fakeCounterStore {
+	return &fakeCounterStore{data: make(map[string]int64)}
+}
+
+func (s *fakeCounterStore) IncrementWindow(_ context.Context, key string, _ time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data[key]++
+	return s.data[key], nil
+}
+
+func (s *fakeCounterStore) GetWindow(_ context.Context, key string) (int64, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count, ok := s.data[key]
+	return count, ok, nil
+}
