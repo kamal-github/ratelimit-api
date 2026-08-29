@@ -19,23 +19,33 @@ import (
 	"github.com/kamal/ratelimit-api/internal/ratelimit"
 )
 
-// bucketCASScript atomically compares the stored bucket's last_refill
-// timestamp against ARGV[3] (0 meaning "I expect this key not to exist
-// yet") and, only on a match, overwrites it with the new state and a
-// (re)set TTL. Returns 1 on success, 0 if another writer won the race.
+// bucketCASScript atomically compares the stored bucket's version field
+// against ARGV[3] (0 meaning "I expect this key not to exist yet") and,
+// only on a match, overwrites it with the new state, an incremented
+// version, and a (re)set TTL. Returns 1 on success, 0 if another writer
+// won the race.
+//
+// The version is a dedicated counter, not derived from last_refill or any
+// other business value. An earlier revision of this script compared
+// last_refill directly, on the assumption it always changes between
+// writes — which breaks the instant two writes land within the same
+// millisecond (a real, reproducible lost-update bug, not a theoretical
+// one — see the BucketStore interface doc in internal/ratelimit/store.go).
+// A counter that increments on every successful write regardless of what
+// the business data says has no such degenerate case.
 const bucketCASScript = `
 local current = redis.call('GET', KEYS[1])
-local currentLastRefill = 0
+local currentVersion = 0
 if current then
   local decoded = cjson.decode(current)
-  currentLastRefill = decoded.last_refill
+  currentVersion = decoded.version
 end
 
-if currentLastRefill ~= tonumber(ARGV[3]) then
+if currentVersion ~= tonumber(ARGV[3]) then
   return 0
 end
 
-local newVal = cjson.encode({tokens = tonumber(ARGV[1]), last_refill = tonumber(ARGV[2])})
+local newVal = cjson.encode({tokens = tonumber(ARGV[1]), last_refill = tonumber(ARGV[2]), version = currentVersion + 1})
 redis.call('SET', KEYS[1], newVal, 'PX', tonumber(ARGV[4]))
 return 1
 `
@@ -63,31 +73,32 @@ func (s *BucketStore) fullKey(key string) string {
 }
 
 // Load implements ratelimit.BucketStore.
-func (s *BucketStore) Load(ctx context.Context, key string) (ratelimit.BucketState, bool, error) {
+func (s *BucketStore) Load(ctx context.Context, key string) (ratelimit.BucketState, int64, bool, error) {
 	raw, err := s.client.Get(ctx, s.fullKey(key)).Result()
 	if err == redis.Nil {
-		return ratelimit.BucketState{}, false, nil
+		return ratelimit.BucketState{}, 0, false, nil
 	}
 	if err != nil {
-		return ratelimit.BucketState{}, false, fmt.Errorf("redisstore: GET: %w", err)
+		return ratelimit.BucketState{}, 0, false, fmt.Errorf("redisstore: GET: %w", err)
 	}
 
 	var wire struct {
 		Tokens     float64 `json:"tokens"`
 		LastRefill int64   `json:"last_refill"`
+		Version    int64   `json:"version"`
 	}
 	if err := json.Unmarshal([]byte(raw), &wire); err != nil {
-		return ratelimit.BucketState{}, false, fmt.Errorf("redisstore: decoding bucket state: %w", err)
+		return ratelimit.BucketState{}, 0, false, fmt.Errorf("redisstore: decoding bucket state: %w", err)
 	}
-	return ratelimit.BucketState{Tokens: wire.Tokens, LastRefill: wire.LastRefill}, true, nil
+	return ratelimit.BucketState{Tokens: wire.Tokens, LastRefill: wire.LastRefill}, wire.Version, true, nil
 }
 
 // Save implements ratelimit.BucketStore.
-func (s *BucketStore) Save(ctx context.Context, key string, newState ratelimit.BucketState, expectedLastRefill int64, ttl time.Duration) (bool, error) {
+func (s *BucketStore) Save(ctx context.Context, key string, newState ratelimit.BucketState, expectedVersion int64, ttl time.Duration) (bool, error) {
 	res, err := s.script.Run(ctx, s.client, []string{s.fullKey(key)},
 		newState.Tokens,
 		newState.LastRefill,
-		expectedLastRefill,
+		expectedVersion,
 		ttl.Milliseconds(),
 	).Result()
 	if err != nil {

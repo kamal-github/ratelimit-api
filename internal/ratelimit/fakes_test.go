@@ -10,34 +10,42 @@ import (
 // test TokenBucketLimiter in isolation from any real storage backend. Its
 // CAS semantics mirror the contract every BucketStore implementation (in
 // particular internal/store/memory and internal/store/redisstore) must
-// honor — see store.go.
+// honor — see store.go. Deliberately version-based, not LastRefill-based:
+// an earlier revision compared LastRefill directly, which is exactly the
+// bug this test's frozen-clock scenario exposed (identical timestamps
+// across concurrent writes silently defeat a CAS keyed on the timestamp).
 type fakeBucketStore struct {
 	mu   sync.Mutex
-	data map[string]BucketState
+	data map[string]fakeBucketEntry
+}
+
+type fakeBucketEntry struct {
+	state   BucketState
+	version int64
 }
 
 func newFakeBucketStore() *fakeBucketStore {
-	return &fakeBucketStore{data: make(map[string]BucketState)}
+	return &fakeBucketStore{data: make(map[string]fakeBucketEntry)}
 }
 
-func (s *fakeBucketStore) Load(_ context.Context, key string) (BucketState, bool, error) {
+func (s *fakeBucketStore) Load(_ context.Context, key string) (BucketState, int64, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, ok := s.data[key]
-	return state, ok, nil
+	entry, ok := s.data[key]
+	return entry.state, entry.version, ok, nil
 }
 
-func (s *fakeBucketStore) Save(_ context.Context, key string, newState BucketState, expectedLastRefill int64, _ time.Duration) (bool, error) {
+func (s *fakeBucketStore) Save(_ context.Context, key string, newState BucketState, expectedVersion int64, _ time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current := int64(0)
 	if existing, ok := s.data[key]; ok {
-		current = existing.LastRefill
+		current = existing.version
 	}
-	if current != expectedLastRefill {
+	if current != expectedVersion {
 		return false, nil
 	}
-	s.data[key] = newState
+	s.data[key] = fakeBucketEntry{state: newState, version: current + 1}
 	return true, nil
 }
 

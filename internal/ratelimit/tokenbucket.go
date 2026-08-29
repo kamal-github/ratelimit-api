@@ -85,14 +85,14 @@ func (l *TokenBucketLimiter) Allow(ctx context.Context, key string) (Decision, e
 		now := l.now()
 
 		state := BucketState{Tokens: cfg.Capacity, LastRefill: now.UnixMilli()}
-		expectedLastRefill := int64(0)
-		loaded, found, err := l.store.Load(ctx, key)
+		expectedVersion := int64(0)
+		loaded, version, found, err := l.store.Load(ctx, key)
 		if err != nil {
 			return Decision{}, fmt.Errorf("ratelimit: loading bucket state: %w", err)
 		}
 		if found {
 			state = loaded
-			expectedLastRefill = loaded.LastRefill
+			expectedVersion = version
 		}
 
 		// Refill based on elapsed time since the last observed refill.
@@ -122,7 +122,7 @@ func (l *TokenBucketLimiter) Allow(ctx context.Context, key string) (Decision, e
 			newState = BucketState{Tokens: tokens, LastRefill: now.UnixMilli()}
 		}
 
-		swapped, err := l.store.Save(ctx, key, newState, expectedLastRefill, ttl)
+		swapped, err := l.store.Save(ctx, key, newState, expectedVersion, ttl)
 		if err != nil {
 			return Decision{}, fmt.Errorf("ratelimit: saving bucket state: %w", err)
 		}
