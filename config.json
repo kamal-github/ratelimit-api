@@ -1,0 +1,40 @@
+{
+  "server": {
+    "port": 8080,
+    "read_timeout": "5s",
+    "write_timeout": "10s",
+    "idle_timeout": "60s"
+  },
+  "storage": {
+    "type": "memory",
+    "redis": {
+      "addr": "localhost:6379",
+      "password": "",
+      "db": 0
+    }
+  },
+  "clients": [
+    {
+      "id": "client-a",
+      "foo": {
+        "capacity": 3,
+        "refill_per_second": 0.5
+      },
+      "bar": {
+        "limit": 5,
+        "window": "10s"
+      }
+    },
+    {
+      "id": "client-b",
+      "foo": {
+        "capacity": 10,
+        "refill_per_second": 2
+      },
+      "bar": {
+        "limit": 20,
+        "window": "10s"
+      }
+    }
+  ]
+}
