@@ -1,0 +1,30 @@
+# Brings up the API with the Redis storage backend, for demonstrating the
+# persistent-storage strategy end to end without installing Redis locally.
+#
+# The memory-backed strategy needs no compose file at all — it's a single
+# binary with no dependencies (see README "Run with in-memory storage").
+#
+# Usage:
+#   docker compose up --build
+#   curl -H "Authorization: bearer client-a" http://localhost:8080/foo
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      STORAGE_TYPE: redis
+      REDIS_ADDR: redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
