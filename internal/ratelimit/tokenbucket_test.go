@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -83,5 +84,46 @@ func TestTokenBucketLimiter_UnknownClient(t *testing.T) {
 
 	if _, err := limiter.Allow(context.Background(), "no-such-client"); err == nil {
 		t.Fatal("expected an error for an unconfigured client, got nil")
+	}
+}
+
+func TestTokenBucketLimiter_ConcurrentRequestsNeverExceedCapacity(t *testing.T) {
+	// Fires far more concurrent requests than the bucket's capacity and
+	// asserts that the number allowed never exceeds capacity, exercising
+	// the store's compare-and-swap path under real contention.
+	store := newFakeBucketStore()
+
+	const capacity = 10
+	limiter := NewTokenBucketLimiter(store, map[string]TokenBucketConfig{
+		"client-a": {Capacity: capacity, RefillPerSecond: 0}, // no refill: isolates the burst check
+	})
+	fixedNow := time.Now()
+	limiter.now = func() time.Time { return fixedNow }
+
+	const attempts = 200
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	allowedCount := 0
+
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d, err := limiter.Allow(context.Background(), "client-a")
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+			if d.Allowed {
+				mu.Lock()
+				allowedCount++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if allowedCount != capacity {
+		t.Fatalf("expected exactly %d requests allowed under contention, got %d", capacity, allowedCount)
 	}
 }
